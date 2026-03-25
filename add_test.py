@@ -1,6 +1,7 @@
 import arcpy
 import os
 import sys
+import shutil
 import time
 
 PROJECT_DIR = r"I:\Jobs\20252026\Savio\20260325_Flood_Aerial"
@@ -30,6 +31,9 @@ def main():
         log(f"ERROR: Project not found: {APRX_PATH}")
         return
 
+    if os.path.exists(KML_OUTPUT):
+        shutil.rmtree(KML_OUTPUT)
+        log(f"  Cleaned previous output: {KML_OUTPUT}")
     os.makedirs(KML_OUTPUT, exist_ok=True)
 
     log("Converting KML to layer...")

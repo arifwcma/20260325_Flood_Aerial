@@ -132,22 +132,8 @@ def process_aig():
         summary["AIG Ground Overlays (KML)"] = overlay_count
 
         if overlay_count > 0:
-            kml_output = os.path.join(PROJECT_DIR, "AIG_KML")
-            os.makedirs(kml_output, exist_ok=True)
-            log("Converting master KML to layer (this may take a long time)...")
-            try:
-                arcpy.conversion.KMLToLayer(
-                    master_kml, kml_output, "AIG_Aerial", "GROUNDOVERLAY"
-                )
-                lyrx_path = os.path.join(kml_output, "AIG_Aerial.lyrx")
-                if os.path.exists(lyrx_path):
-                    layers.append((lyrx_path, "AIG Aerial Overlays"))
-                    log(f"  Done: {lyrx_path}")
-                else:
-                    log("  WARNING: No .lyrx produced (gx:LatLonQuad may not be supported)")
-            except Exception as e:
-                log(f"  FAILED: {e}")
-                summary["AIG KML Import"] = "FAILED"
+            layers.append((master_kml, "AIG Aerial Overlays"))
+            log(f"  Will add directly via addDataFromPath: {master_kml}")
 
     log("Scanning for EO_POINTS shapefiles...")
     shps = []
@@ -421,7 +407,7 @@ def find_template():
 def layer_exists(p):
     if p is None:
         return False
-    if p.lower().endswith((".lyrx", ".ecw")):
+    if p.lower().endswith((".kml", ".ecw")):
         return os.path.exists(p)
     return arcpy.Exists(p)
 
@@ -499,19 +485,12 @@ def setup_project(all_groups):
 
         for data_path, label in valid:
             try:
-                if data_path.lower().endswith(".lyrx"):
-                    lyr_file = arcpy.mp.LayerFile(data_path)
-                    if grp:
-                        m.addLayerToGroup(grp, lyr_file)
-                    else:
-                        m.addLayer(lyr_file)
-                else:
-                    lyr = m.addDataFromPath(data_path)
-                    if lyr:
-                        lyr.name = label
-                    if grp and lyr:
-                        m.addLayerToGroup(grp, lyr)
-                        m.removeLayer(lyr)
+                lyr = m.addDataFromPath(data_path)
+                if lyr:
+                    lyr.name = label
+                if grp and lyr:
+                    m.addLayerToGroup(grp, lyr)
+                    m.removeLayer(lyr)
                 log(f"    + {label}")
             except Exception as e:
                 log(f"    FAILED ({label}): {e}")

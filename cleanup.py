@@ -8,7 +8,6 @@ PROJECT_DIR = r"I:\Jobs\20252026\Savio\20260325_Flood_Aerial"
 
 TARGETS = [
     os.path.join(PROJECT_DIR, "aig_master.kml"),
-    os.path.join(PROJECT_DIR, "AIG_KML"),
     os.path.join(PROJECT_DIR, "AIG_KML_test"),
     os.path.join(PROJECT_DIR, "Wimmera_extracted"),
 ]
