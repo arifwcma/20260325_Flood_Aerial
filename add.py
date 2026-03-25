@@ -5,12 +5,13 @@ import shutil
 import time
 import traceback
 import xml.etree.ElementTree as ET
+import zipfile
 
 SOURCE = r"I:\Raster\October 2022 Flood Imagery_20230517"
 PROJECT_DIR = r"I:\Jobs\20252026\Savio\20260325_Flood_Aerial"
-GDB_NAME = "FloodAerial.gdb"
+GDB_NAME = "flood_aerial.gdb"
 GDB = os.path.join(PROJECT_DIR, GDB_NAME)
-APRX_PATH = os.path.join(PROJECT_DIR, "FloodAerial.aprx")
+APRX_PATH = os.path.join(PROJECT_DIR, "flood_aerial.aprx")
 SR = arcpy.SpatialReference(28354)
 
 arcpy.env.overwriteOutput = True
@@ -106,8 +107,7 @@ def process_aig():
     log("=" * 50)
 
     aig_dir = os.path.join(SOURCE, "AIG")
-    kml_lyrx = None
-    points_path = None
+    layers = []
 
     log("Scanning AIG folders for KML files...")
     kml_files = []
@@ -137,13 +137,12 @@ def process_aig():
             log("Converting master KML to layer (this may take a long time)...")
             try:
                 arcpy.conversion.KMLToLayer(
-                    master_kml, kml_output, "AIG_Aerial",
-                    "GROUNDOVERLAY"
+                    master_kml, kml_output, "AIG_Aerial", "GROUNDOVERLAY"
                 )
                 lyrx_path = os.path.join(kml_output, "AIG_Aerial.lyrx")
                 if os.path.exists(lyrx_path):
-                    kml_lyrx = lyrx_path
-                    log(f"  Done: {kml_lyrx}")
+                    layers.append((lyrx_path, "AIG Aerial Overlays"))
+                    log(f"  Done: {lyrx_path}")
                 else:
                     log("  WARNING: No .lyrx produced (gx:LatLonQuad may not be supported)")
             except Exception as e:
@@ -159,7 +158,6 @@ def process_aig():
                 shps.append(os.path.join(fp, f))
         if (i + 1) % 20 == 0:
             log(f"  Scanned {i + 1}/{len(folders)} folders...")
-
     log(f"  Found {len(shps)} shapefiles across {len(folders)} folders")
 
     if shps:
@@ -170,12 +168,12 @@ def process_aig():
             count = int(arcpy.management.GetCount(points_path)[0])
             log(f"  Done: {count} photo location points")
             summary["AIG Photo Locations"] = count
+            layers.append((points_path, "AIG Photo Locations"))
         except Exception as e:
             log(f"  FAILED: {e}")
             summary["AIG Photo Locations"] = "FAILED"
-            points_path = None
 
-    return kml_lyrx, points_path
+    return ("AIG Aerial Photos", layers)
 
 
 def process_linescans():
@@ -185,6 +183,7 @@ def process_linescans():
     log("=" * 50)
 
     linescans_dir = os.path.join(SOURCE, "Linescans")
+    layers = []
     rgb_folders = []
     other_folders = []
 
@@ -200,16 +199,14 @@ def process_linescans():
             other_folders.append(root)
             log(f"  Non-RGB: {parent}")
 
-    rgb_mosaic = None
-    other_mosaic = None
-
     if rgb_folders:
         log(f"Building RGB linescan mosaic ({len(rgb_folders)} folders)...")
         try:
-            rgb_mosaic, count = create_mosaic(
+            path, count = create_mosaic(
                 "Linescans_RGB", ";".join(rgb_folders), "*.jpg", False
             )
             summary["Linescans RGB"] = count
+            layers.append((path, "RGB Linescans"))
         except Exception as e:
             log(f"  FAILED: {e}")
             summary["Linescans RGB"] = "FAILED"
@@ -217,15 +214,188 @@ def process_linescans():
     if other_folders:
         log(f"Building non-RGB linescan mosaic ({len(other_folders)} folders)...")
         try:
-            other_mosaic, count = create_mosaic(
+            path, count = create_mosaic(
                 "Linescans_NonRGB", ";".join(other_folders), None, False
             )
             summary["Linescans Non-RGB"] = count
+            layers.append((path, "Non-RGB Linescans"))
         except Exception as e:
             log(f"  FAILED: {e}")
             summary["Linescans Non-RGB"] = "FAILED"
 
-    return rgb_mosaic, other_mosaic
+    return ("Linescans", layers)
+
+
+def process_satellite():
+    log("")
+    log("=" * 50)
+    log("SATELLITE IMAGERY")
+    log("=" * 50)
+
+    sat_dir = os.path.join(SOURCE, "Satellite Imagery", "Satellite_Imagery")
+    layers = []
+
+    if not os.path.isdir(sat_dir):
+        log(f"  Extracted folder not found: {sat_dir}")
+        log("  Satellite_Imagery.zip may need extracting first")
+        summary["Satellite Imagery"] = "NOT FOUND"
+        return ("Satellite Imagery", layers)
+
+    log("Scanning for ECW rasters...")
+    for root, dirs, files in os.walk(sat_dir):
+        for f in files:
+            if f.lower().endswith(".ecw"):
+                ecw_path = os.path.join(root, f)
+                label = os.path.splitext(f)[0]
+                layers.append((ecw_path, label))
+                log(f"  + {label}")
+
+    summary["Satellite Imagery"] = len(layers)
+    return ("Satellite Imagery", layers)
+
+
+def process_firemapper():
+    log("")
+    log("=" * 50)
+    log("FIREMAPPER")
+    log("=" * 50)
+
+    fm_dir = os.path.join(SOURCE, "FireMapper")
+    layers = []
+    fc_path = os.path.join(GDB, "FireMapper_Photo_Locations")
+
+    log("Extracting geotagged photo locations (recursive scan)...")
+    log("  This may take a while with thousands of photos...")
+
+    try:
+        arcpy.management.GeoTaggedPhotosToPoints(
+            fm_dir, fc_path, "", "ONLY_GEOTAGGED"
+        )
+        count = int(arcpy.management.GetCount(fc_path)[0])
+        log(f"  Done: {count} geotagged photos found")
+        summary["FireMapper Photos"] = count
+        if count > 0:
+            layers.append((fc_path, "FireMapper Photo Locations"))
+    except Exception as e:
+        log(f"  FAILED: {e}")
+        summary["FireMapper Photos"] = "FAILED"
+
+    return ("FireMapper", layers)
+
+
+def process_gdb():
+    log("")
+    log("=" * 50)
+    log("CMA GEODATABASE")
+    log("=" * 50)
+
+    gdb_path = os.path.join(SOURCE, "CMA_Imagery_Request_Oct_2022_Floods.gdb")
+    layers = []
+
+    if not os.path.isdir(gdb_path):
+        log(f"  GDB not found: {gdb_path}")
+        summary["CMA Features"] = "NOT FOUND"
+        return ("CMA Features", layers)
+
+    log(f"Listing feature classes in {os.path.basename(gdb_path)}...")
+    prev_ws = arcpy.env.workspace
+    arcpy.env.workspace = gdb_path
+    try:
+        fcs = arcpy.ListFeatureClasses() or []
+        log(f"  Found {len(fcs)} feature classes")
+        summary["CMA Features"] = len(fcs)
+        for fc in fcs:
+            fc_full = os.path.join(gdb_path, fc)
+            layers.append((fc_full, fc))
+            log(f"  + {fc}")
+    except Exception as e:
+        log(f"  FAILED: {e}")
+        summary["CMA Features"] = "FAILED"
+    finally:
+        arcpy.env.workspace = prev_ws
+
+    return ("CMA Features", layers)
+
+
+def process_snapsendsolve():
+    log("")
+    log("=" * 50)
+    log("SNAP SEND SOLVE")
+    log("=" * 50)
+
+    csv_path = os.path.join(
+        SOURCE, "SnapSendSolve", "SSS_Oct_2022_Flood_Event_All.csv"
+    )
+    layers = []
+
+    if not os.path.isfile(csv_path):
+        log(f"  CSV not found: {csv_path}")
+        summary["SnapSendSolve"] = "NOT FOUND"
+        return ("SnapSendSolve", layers)
+
+    fc_path = os.path.join(GDB, "SnapSendSolve_Reports")
+    log("Converting CSV to points (latitude/longitude columns)...")
+    try:
+        arcpy.management.XYTableToPoint(
+            csv_path, fc_path, "longitude", "latitude",
+            coordinate_system=arcpy.SpatialReference(4326),
+        )
+        count = int(arcpy.management.GetCount(fc_path)[0])
+        log(f"  Done: {count} report points")
+        summary["SnapSendSolve"] = count
+        layers.append((fc_path, "SnapSendSolve Reports"))
+    except Exception as e:
+        log(f"  FAILED: {e}")
+        summary["SnapSendSolve"] = "FAILED"
+
+    return ("SnapSendSolve", layers)
+
+
+def process_wimmera():
+    log("")
+    log("=" * 50)
+    log("WIMMERA")
+    log("=" * 50)
+
+    wimmera_dir = os.path.join(SOURCE, "Wimmera")
+    layers = []
+
+    gdb_zip = os.path.join(wimmera_dir, "Wimmera.gdb.zip")
+    extract_dir = os.path.join(PROJECT_DIR, "Wimmera_extracted")
+    gdb_extracted = os.path.join(extract_dir, "Wimmera.gdb")
+
+    if os.path.isfile(gdb_zip) and not os.path.isdir(gdb_extracted):
+        log(f"Extracting {os.path.basename(gdb_zip)}...")
+        try:
+            os.makedirs(extract_dir, exist_ok=True)
+            with zipfile.ZipFile(gdb_zip, "r") as z:
+                z.extractall(extract_dir)
+            log(f"  Extracted to: {extract_dir}")
+        except Exception as e:
+            log(f"  FAILED to extract: {e}")
+
+    if os.path.isdir(gdb_extracted):
+        log("Listing feature classes in Wimmera.gdb...")
+        prev_ws = arcpy.env.workspace
+        arcpy.env.workspace = gdb_extracted
+        try:
+            fcs = arcpy.ListFeatureClasses() or []
+            log(f"  Found {len(fcs)} feature classes")
+            summary["Wimmera GDB Features"] = len(fcs)
+            for fc in fcs:
+                fc_full = os.path.join(gdb_extracted, fc)
+                layers.append((fc_full, fc))
+                log(f"  + {fc}")
+        except Exception as e:
+            log(f"  FAILED: {e}")
+            summary["Wimmera GDB Features"] = "FAILED"
+        finally:
+            arcpy.env.workspace = prev_ws
+    else:
+        log("  Wimmera.gdb not available")
+        summary["Wimmera GDB Features"] = "NOT FOUND"
+
+    return ("Wimmera", layers)
 
 
 def find_template():
@@ -248,7 +418,15 @@ def find_template():
     return None
 
 
-def setup_project(aig_mosaic, aig_points, rgb_mosaic, other_mosaic):
+def layer_exists(p):
+    if p is None:
+        return False
+    if p.lower().endswith((".lyrx", ".ecw")):
+        return os.path.exists(p)
+    return arcpy.Exists(p)
+
+
+def setup_project(all_groups):
     log("")
     log("=" * 50)
     log("PROJECT SETUP")
@@ -282,6 +460,12 @@ def setup_project(aig_mosaic, aig_points, rgb_mosaic, other_mosaic):
         except Exception:
             pass
 
+    for tbl in m.listTables():
+        try:
+            m.removeTable(tbl)
+        except Exception:
+            pass
+
     m.spatialReference = SR
     log("  CRS set to GDA94 / MGA zone 54 (EPSG:28354)")
 
@@ -295,29 +479,11 @@ def setup_project(aig_mosaic, aig_points, rgb_mosaic, other_mosaic):
         except Exception:
             log("  WARNING: Could not add basemap")
 
-    layer_groups = [
-        ("AIG Aerial Photos", [
-            (aig_mosaic, "AIG Aerial Overlays"),
-            (aig_points, "AIG Photo Locations"),
-        ]),
-        ("Linescans", [
-            (rgb_mosaic, "RGB Linescans"),
-            (other_mosaic, "Non-RGB Linescans"),
-        ]),
-    ]
-
-    def layer_exists(p):
-        if p is None:
-            return False
-        if p.lower().endswith(".lyrx"):
-            return os.path.exists(p)
-        return arcpy.Exists(p)
-
     can_group = hasattr(m, "createGroupLayer")
     if not can_group:
         log("  Group layers not supported in this version, adding flat")
 
-    for group_name, layers in layer_groups:
+    for group_name, layers in all_groups:
         valid = [(p, n) for p, n in layers if layer_exists(p)]
         if not valid:
             continue
@@ -364,11 +530,18 @@ def main():
     log(f"Output:  {PROJECT_DIR}")
     log("")
 
+    all_groups = []
+
     try:
         create_gdb()
-        aig_mosaic, aig_points = process_aig()
-        rgb_mosaic, other_mosaic = process_linescans()
-        setup_project(aig_mosaic, aig_points, rgb_mosaic, other_mosaic)
+        all_groups.append(process_aig())
+        all_groups.append(process_linescans())
+        all_groups.append(process_satellite())
+        all_groups.append(process_firemapper())
+        all_groups.append(process_gdb())
+        all_groups.append(process_snapsendsolve())
+        all_groups.append(process_wimmera())
+        setup_project(all_groups)
     except Exception:
         log("FATAL ERROR:")
         traceback.print_exc()
